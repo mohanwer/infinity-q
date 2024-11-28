@@ -3,12 +3,11 @@ use std::str::FromStr;
 use strum_macros::EnumString;
 use std::fmt;
 use std::fmt::Formatter;
-use std::io::stderr;
 
 #[derive(Debug)]
 pub enum RespError {
     InvalidPassword(String),
-    CommandNotFound(String)
+    CommandNotFound(String),
 }
 
 impl fmt::Display for RespError {
@@ -40,7 +39,7 @@ struct AuthAttempt {
 const ADMIN: &str = "admin";
 const ADMIN_PW: &str = "password";
 
-fn map_command(payload: String) -> Result<(), RespError> {
+fn map_command(payload: String) -> Result<(), RespError>  {
     let payload_split: Vec<&str> = payload.split(' ').collect();
     let first_word: String = payload_split[0].to_string();
     let cmd_result = CommandSet::from_str(&first_word);
