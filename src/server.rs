@@ -95,18 +95,14 @@ impl TcpClient {
 
         while read_idx_start < buffer_end {
             let eol_idx_result = get_eol_index(read_idx_start, &buffer, buffer_end);
-            let eol_exists = eol_idx_result.is_ok();
             let mut read_idx_end: usize = eol_idx_result.unwrap_or_else(|_| buffer_end);
             let line = buffer[read_idx_start..=read_idx_end].to_vec();
             let last_raw_msg = self.raw_msg_queue.back_mut().unwrap();
-            if !last_raw_msg.eol_exists {
-                last_raw_msg.data.extend(&line);
-                last_raw_msg.eol_exists = eol_exists;
+            if !last_raw_msg.is_last_line_complete() {
+                last_raw_msg.extend(&line).expect("unable to add line.");
             } else {
-                self.raw_msg_queue.push_back(RawCmd {
-                    data: line,
-                    eol_exists
-                });
+                let cmd = RawCmd::from_vec(line);
+                self.raw_msg_queue.push_back(cmd);
             }
             read_idx_start = get_next_line_idx(read_idx_end, &buffer);
         }
@@ -387,7 +383,7 @@ mod tests {
         let chunked_buffers = create_chunked_transmission();
         for chunk in chunked_buffers.into_iter() {
             let buff_end = &chunk.iter().position(|p| p.eq(&0)).unwrap() - 1;
-            &client.process_buffer(&chunk, buff_end);
+            client.process_buffer(&chunk, buff_end);
         }
         println!("{}", std::str::from_utf8(&client.raw_msg_queue[0].data).unwrap());
         println!("{}", client.raw_msg_queue.len());
