@@ -6,6 +6,7 @@ use tokio::io::{AsyncWriteExt, Interest, Error};
 use tokio::net::{TcpListener, TcpStream};
 use crate::constants::{ASCII_ASTERISK, ASCII_CARRIAGE_RETURN, ASCII_LINE_FEED, DEFAULT_CLIENT_SIZE};
 use crate::raw_cmd::RawCmd;
+use crate::utils::read_next_line;
 
 #[derive(Debug)]
 pub enum SerializeError {
@@ -87,25 +88,44 @@ impl TcpClient {
         }
     }
 
-    pub fn process_buffer(&mut self, buffer: &Vec<u8>, buffer_end: usize) {
+    pub fn process_buffer(mut self, buffer: &Vec<u8>, buffer_end: usize) -> Result<(), SerializeError> {
         let mut read_idx_start: usize = 0;
-        if self.raw_msg_queue.len() == 0 {
-            self.raw_msg_queue.push_front(RawCmd::new());
-        }
 
         while read_idx_start < buffer_end {
-            let eol_idx_result = get_eol_index(read_idx_start, &buffer, buffer_end);
-            let mut read_idx_end: usize = eol_idx_result.unwrap_or_else(|_| buffer_end);
-            let line = buffer[read_idx_start..=read_idx_end].to_vec();
-            let last_raw_msg = self.raw_msg_queue.back_mut().unwrap();
-            if !last_raw_msg.is_last_line_complete() {
-                last_raw_msg.extend(&line).expect("unable to add line.");
-            } else {
-                let cmd = RawCmd::from_vec(line);
-                self.raw_msg_queue.push_back(cmd);
+            let last_raw_msg = self.get_cmd_for_next_line();
+            let line = read_next_line(read_idx_start, &buffer, buffer_end);
+            let msg_complete_result = &last_raw_msg.extend(&line);
+            match msg_complete_result {
+                Err(err) => {
+                    match &err {
+                        SerializeError::IncompleteLine |
+                        SerializeError::MissingContentSize |
+                        SerializeError::IncompleteCommand |
+                        SerializeError::UnreadableCommandSize => { continue }
+                        SerializeError::UnsupportedTextEncoding(err) => {
+                            return Err(SerializeError::UnsupportedTextEncoding(err.clone()));
+                        }
+                    }
+                }
+                Ok(_) => {}
             }
-            read_idx_start = get_next_line_idx(read_idx_end, &buffer);
+            let next_line_start = read_idx_start + line.len();
+            read_idx_start = get_next_line_idx(next_line_start, &buffer);
         }
+
+        Ok(())
+    }
+
+    pub fn get_cmd_for_next_line<'a>(mut self) -> &'a mut RawCmd {
+        if self.raw_msg_queue.len() == 0 {
+            let raw_cmd = RawCmd::new();
+            self.raw_msg_queue.push_back(raw_cmd);
+        }
+        let last_cmd = self.raw_msg_queue.back().unwrap();
+        if last_cmd.complete {
+            self.raw_msg_queue.push_back(RawCmd::new());
+        }
+        self.raw_msg_queue.back_mut().expect("Received empty buffer")
     }
 
     pub fn try_serialize_raw_msg(&mut self) -> Result<u16, SerializeError> {

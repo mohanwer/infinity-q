@@ -9,7 +9,8 @@ pub struct RawCmd {
     pub(crate) eol_exists: bool,
     size: Option<usize>,
     last_read_idx: usize,
-    cr_nr_count: usize
+    cr_nr_count: usize,
+    pub(crate) complete: bool
 }
 
 impl RawCmd {
@@ -79,10 +80,11 @@ impl RawCmd {
         }
     }
 
-    pub fn inspect_if_transmission_complete(&mut self) -> Result<bool, SerializeError> {
+    pub fn all_lines_received(&mut self) -> Result<bool, SerializeError> {
         let data_size_result = self.size();
         if data_size_result.is_err() {
-            return Err(data_size_result.err().unwrap())
+            let eol_result = self.first_line_eol().err().expect("Unable to error");
+            return Err(eol_result);
         }
         let data_size = data_size_result?;
         while self.last_read_idx + 1 < self.data.len() && self.cr_nr_count < data_size {
@@ -91,13 +93,14 @@ impl RawCmd {
                 self.cr_nr_count += 1;
             }
         }
-        Ok(self.cr_nr_count == data_size)
+        self.complete = self.cr_nr_count == data_size;
+        Ok(self.complete)
     }
 
-    pub fn extend(mut self, line: &Vec<u8>) -> Result<(), SerializeError> {
-        self.data.extend(&line);
-        match self.inspect_if_transmission_complete() {
-            Ok(_) => {Ok(()) }
+    pub fn extend(&mut self, line: &Vec<u8>) -> Result<bool, SerializeError> {
+        self.data.extend(line);
+        match self.all_lines_received() {
+            Ok(msg_complete) => {Ok(msg_complete) }
             Err(err) => {Err(err)}
         }
     }
@@ -166,13 +169,13 @@ mod tests {
     #[test]
     fn test_message_ready_returns_true() {
         let mut cmd = create_hello_cmd();
-        assert_eq!(true, cmd.inspect_if_transmission_complete().unwrap());
+        assert_eq!(true, cmd.all_lines_received().unwrap());
     }
 
     #[test]
     fn test_message_ready_returns_false() {
         let mut cmd = create_partial_hello_cmd();
-        assert_eq!(false, cmd.inspect_if_transmission_complete().unwrap());
+        assert_eq!(false, cmd.all_lines_received().unwrap());
         assert_eq!(5, cmd.last_read_idx);
         assert_eq!(1, cmd.cr_nr_count);
     }

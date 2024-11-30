@@ -29,3 +29,9 @@ pub fn get_eol_index(start: usize, buff: &Vec<u8>, buffer_end: usize) -> Result<
 
     Ok(end)
 }
+
+pub fn read_next_line(start: usize, buff: &Vec<u8>, buffer_end: usize) -> Vec<u8> {
+    let eol_idx_result = get_eol_index(start, &buff, buffer_end);
+    let mut read_idx_end: usize = eol_idx_result.unwrap_or_else(|_| buffer_end);
+    buff[start..=read_idx_end].to_vec()
+}
