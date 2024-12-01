@@ -6,7 +6,9 @@ use tokio::io::{AsyncWriteExt, Interest, Error};
 use tokio::net::{TcpListener, TcpStream};
 use crate::constants::{ASCII_ASTERISK, ASCII_CARRIAGE_RETURN, ASCII_LINE_FEED, DEFAULT_CLIENT_SIZE};
 use crate::raw_cmd::RawCmd;
-use crate::utils::read_next_line;
+use crate::utils::read_line;
+use std::io::BufReader;
+use std::io::Read;
 
 #[derive(Debug)]
 pub enum SerializeError {
@@ -72,6 +74,7 @@ struct TcpClient {
     authenticated: bool,
     msg_cnt_from_client: u32,
     msg_cnt_to_client: u32,
+    msgs_finished: u32,
     raw_msg_queue: VecDeque<RawCmd>,
 }
 
@@ -84,18 +87,18 @@ impl TcpClient {
             authenticated: false,
             msg_cnt_from_client: 0,
             msg_cnt_to_client: 0,
+            msgs_finished: 0,
             raw_msg_queue: VecDeque::new(),
         }
     }
 
-    pub fn process_buffer(mut self, buffer: &Vec<u8>, buffer_end: usize) -> Result<(), SerializeError> {
-        let mut read_idx_start: usize = 0;
-
-        while read_idx_start < buffer_end {
-            let last_raw_msg = self.get_cmd_for_next_line();
-            let line = read_next_line(read_idx_start, &buffer, buffer_end);
-            let msg_complete_result = &last_raw_msg.extend(&line);
-            match msg_complete_result {
+    pub fn read_buff(&mut self, buff: &[u8]) -> Result<(), SerializeError> {
+        let mut read_cursor: usize = 0;
+        while read_cursor < buff.len() && buff[read_cursor] != 0 {
+            let mut msg = self.get_or_create_raw_msg();
+            let line = read_line(read_cursor, &buff);
+            let msg_finished = msg.extend(&line);
+            match msg_finished {
                 Err(err) => {
                     match &err {
                         SerializeError::IncompleteLine |
@@ -107,16 +110,18 @@ impl TcpClient {
                         }
                     }
                 }
-                Ok(_) => {}
+                Ok(_) => {
+                    self.msg_cnt_from_client += 1;
+                    self.msgs_finished += 1;
+                }
             }
-            let next_line_start = read_idx_start + line.len();
-            read_idx_start = get_next_line_idx(next_line_start, &buffer);
+            read_cursor += line.len();
         }
 
         Ok(())
     }
 
-    pub fn get_cmd_for_next_line<'a>(mut self) -> &'a mut RawCmd {
+    pub fn get_or_create_raw_msg(&mut self) -> &mut RawCmd {
         if self.raw_msg_queue.len() == 0 {
             let raw_cmd = RawCmd::new();
             self.raw_msg_queue.push_back(raw_cmd);
@@ -125,20 +130,20 @@ impl TcpClient {
         if last_cmd.complete {
             self.raw_msg_queue.push_back(RawCmd::new());
         }
-        self.raw_msg_queue.back_mut().expect("Received empty buffer")
+        self.raw_msg_queue.back_mut().expect("No messages found in queue")
     }
 
     pub fn try_serialize_raw_msg(&mut self) -> Result<u16, SerializeError> {
-        if self.raw_msg_queue.len() == 0 { return Ok(0); }
-        let raw_msg_first_line = self.raw_msg_queue.front().unwrap();
-        if raw_msg_first_line.data.len() == 0 {
+        let msg = self.raw_msg_queue.front().expect("Expected first message");
+        if !&msg.complete {
             return Err(SerializeError::IncompleteCommand);
         }
-        let msg_data_type = raw_msg_first_line.data[0];
+        let first_msg = self.raw_msg_queue.pop_front().expect("Expected first message");
+        let msg_data_type = first_msg.data[0];
         if msg_data_type != ASCII_ASTERISK {
             return Err(SerializeError::IncompleteLine);
         }
-        let msg = str::from_utf8(&raw_msg_first_line.data[1..]).unwrap();
+        let msg = str::from_utf8(&first_msg.data[1..]).unwrap();
         let expect_msg_size_result = msg.parse::<u16>();
         if expect_msg_size_result.is_err() {
             return Err(SerializeError::IncompleteLine);
@@ -155,6 +160,8 @@ impl TcpClient {
         Ok(expected_msg_size)
     }
 }
+
+
 
 pub struct TcpServer {
     redis_clients: Vec<TcpClient>
@@ -189,8 +196,7 @@ impl TcpServer {
             stream.writable().await?;
 
             if ready.is_readable() {
-                let mut data = vec![0; 4000];
-
+                let mut data = [0; 4000];
                 match stream.try_read(&mut data) {
                     Ok(0) => break,
                     Ok(n) => {
@@ -222,7 +228,7 @@ fn is_end_of_line_index(index: usize, buff: &Vec<u8>) -> bool {
         buff[index-1] == ASCII_CARRIAGE_RETURN
 }
 
-fn get_next_line_idx(eol_index: usize, buff: &Vec<u8>) -> usize {
+fn get_next_line_idx(eol_index: usize, buff: &[u8]) -> usize {
     let mut end = eol_index;
     while end < buff.len() && (buff[end] == ASCII_LINE_FEED || buff[end] == ASCII_CARRIAGE_RETURN) {
         end += 1;
@@ -402,12 +408,9 @@ mod tests {
         let mut client = TcpClient::new("0.0.0.0".to_string());
         let chunked_buffers = create_chunked_transmission();
         for chunk in chunked_buffers.into_iter() {
-            let buff_end = &chunk.iter().position(|p| p.eq(&0)).unwrap() - 1;
-            client.process_buffer(&chunk, buff_end);
+            &client.read_buff(&chunk);
         }
-        println!("{}", std::str::from_utf8(&client.raw_msg_queue[0].data).unwrap());
-        println!("{}", client.raw_msg_queue.len());
-        assert_eq!(client.raw_msg_queue.len(), 29);
+        assert_eq!(client.raw_msg_queue.len(), 3);
     }
 
 

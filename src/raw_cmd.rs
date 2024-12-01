@@ -48,7 +48,7 @@ impl RawCmd {
                         if command_size_result.is_err() {
                             Err(SerializeError::UnreadableCommandSize)
                         } else {
-                            let mut cmd_size = command_size_result
+                            let cmd_size = command_size_result
                                 .expect("Unable to parse command size");
                             let cmd_size_with_attr_lengths = cmd_size * 2 + 1;
                             self.size = Some(cmd_size_with_attr_lengths);
@@ -73,7 +73,7 @@ impl RawCmd {
         {
             return Err(SerializeError::IncompleteCommand)
         }
-        let first_eol_result = get_eol_index(0, &self.data, self.data.len());
+        let first_eol_result = get_eol_index(0, &self.data);
         match first_eol_result {
             Ok(eol) => { Ok(eol - 2) /* strip line feed & carriage return */ }
             Err(_) => { Err(SerializeError::IncompleteLine) }
