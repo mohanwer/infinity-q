@@ -1,32 +1,31 @@
+use crate::constants::{DEFAULT_CLIENT_SIZE, OKAY_RESPONSE};
+use crate::resp_buffered_reader::{RespBuffReadResult, RespBufferedReader};
+use crate::utils::get_zero_byte_index;
 use std::collections::VecDeque;
-use std::{fmt, io, str};
 use std::fmt::Formatter;
-use std::str::Utf8Error;
-use tokio::io::{AsyncWriteExt, Interest, Error};
+use std::{fmt, io};
+use tokio::io::{AsyncWriteExt, Error, Interest};
 use tokio::net::{TcpListener, TcpStream};
-use crate::constants::{ASCII_ASTERISK, ASCII_CARRIAGE_RETURN, ASCII_LINE_FEED, DEFAULT_CLIENT_SIZE};
-use crate::raw_cmd::RawCmd;
-use crate::utils::read_line;
-use std::io::BufReader;
-use std::io::Read;
 
 #[derive(Debug)]
 pub enum SerializeError {
     IncompleteLine,
     MissingContentSize,
     IncompleteCommand,
-    UnsupportedTextEncoding(Utf8Error),
-    UnreadableCommandSize
+    UnsupportedTextEncoding,
+    UnreadableCommandSize,
 }
 
 impl fmt::Display for SerializeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            SerializeError::IncompleteLine => write!(f, "End of line not found. Try reading stream again."),
+            SerializeError::IncompleteLine => {
+                write!(f, "End of line not found. Try reading stream again.")
+            }
             SerializeError::MissingContentSize => write!(f, "Message does not contain size"),
             SerializeError::IncompleteCommand => write!(f, "Partial read occurred, "),
-            SerializeError::UnsupportedTextEncoding(e) => write!(f, "{}", e),
-            SerializeError::UnreadableCommandSize => write!(f, "{}", "Unreadable command size")
+            SerializeError::UnsupportedTextEncoding => write!(f, "Could not serialize to utf8"),
+            SerializeError::UnreadableCommandSize => write!(f, "{}", "Unreadable command size"),
         }
     }
 }
@@ -39,43 +38,21 @@ impl fmt::Display for TransmissionMissingArraySize {
     }
 }
 
-const OKAY_RESPONSE :&str = "%7\r\n\
-+server\r\n\
-+infinity_q\r\n\
-+version\r\n\
-:1\r\n\
-+proto\r\n\
-:3\r\n\
-+id\r\n\
-$1\r\n\
-a\r\n\
-+mode\r\n\
-$10\r\n\
-standalone\r\n\
-+role\r\n\
-$6\r\n\
-master\r\n\
-+modules\r\n\
-*-1\r\n";
-
-
-pub enum Cmd {
-    LPUSH { key: String, elements: Vec<String> },
-    LPOP { key: String, count: u32 },
-    HELLO { auth: String, password: String },
-    SADD { key: String, member: Vec<String> },
-    Unknown
-}
-
+#[derive(Clone, Debug)]
 struct TcpClient {
     name: String,
     address: String,
     version: String,
     authenticated: bool,
-    msg_cnt_from_client: u32,
+    cmds_from_client: u32,
     msg_cnt_to_client: u32,
-    msgs_finished: u32,
-    raw_msg_queue: VecDeque<RawCmd>,
+    raw_msg_queue: VecDeque<Vec<String>>,
+}
+
+#[derive(Debug)]
+struct BufferReadResult {
+    read_to_end_of_message: bool,
+    bytes_read: usize,
 }
 
 impl TcpClient {
@@ -85,92 +62,45 @@ impl TcpClient {
             version: "unknown".to_string(),
             address,
             authenticated: false,
-            msg_cnt_from_client: 0,
+            cmds_from_client: 0,
             msg_cnt_to_client: 0,
-            msgs_finished: 0,
             raw_msg_queue: VecDeque::new(),
         }
     }
 
-    pub fn read_buff(&mut self, buff: &[u8]) -> Result<(), SerializeError> {
-        let mut read_cursor: usize = 0;
-        while read_cursor < buff.len() && buff[read_cursor] != 0 {
-            let mut msg = self.get_or_create_raw_msg();
-            let line = read_line(read_cursor, &buff);
-            let msg_finished = msg.extend(&line);
-            match msg_finished {
-                Err(err) => {
-                    match &err {
-                        SerializeError::IncompleteLine |
-                        SerializeError::MissingContentSize |
-                        SerializeError::IncompleteCommand |
-                        SerializeError::UnreadableCommandSize => { continue }
-                        SerializeError::UnsupportedTextEncoding(err) => {
-                            return Err(SerializeError::UnsupportedTextEncoding(err.clone()));
-                        }
-                    }
-                }
-                Ok(_) => {
-                    self.msg_cnt_from_client += 1;
-                    self.msgs_finished += 1;
-                }
-            }
-            read_cursor += line.len();
+    pub fn read_buff(
+        &self,
+        buff_reader: &mut RespBufferedReader,
+        buff: &[u8],
+    ) -> Result<RespBuffReadResult, SerializeError> {
+        let mut read_result = RespBuffReadResult::new();
+        while read_result.end_of_message_reached {
+            read_result = buff_reader.read_line(&buff)?;
         }
-
-        Ok(())
+        Ok(read_result)
     }
 
-    pub fn get_or_create_raw_msg(&mut self) -> &mut RawCmd {
-        if self.raw_msg_queue.len() == 0 {
-            let raw_cmd = RawCmd::new();
-            self.raw_msg_queue.push_back(raw_cmd);
+    pub fn read_msgs(&self, buff: &[u8]) -> Result<Vec<RespBufferedReader>, SerializeError> {
+        let mut readers = Vec::new();
+        let mut bytes_read: usize = 0;
+        let mut reader = RespBufferedReader::new();
+        let end_of_buffer = get_zero_byte_index(0, buff);
+        while bytes_read < end_of_buffer {
+            let read_result = self.read_buff(&mut reader, buff)?;
+            bytes_read += read_result.bytes_read;
         }
-        let last_cmd = self.raw_msg_queue.back().unwrap();
-        if last_cmd.complete {
-            self.raw_msg_queue.push_back(RawCmd::new());
-        }
-        self.raw_msg_queue.back_mut().expect("No messages found in queue")
-    }
-
-    pub fn try_serialize_raw_msg(&mut self) -> Result<u16, SerializeError> {
-        let msg = self.raw_msg_queue.front().expect("Expected first message");
-        if !&msg.complete {
-            return Err(SerializeError::IncompleteCommand);
-        }
-        let first_msg = self.raw_msg_queue.pop_front().expect("Expected first message");
-        let msg_data_type = first_msg.data[0];
-        if msg_data_type != ASCII_ASTERISK {
-            return Err(SerializeError::IncompleteLine);
-        }
-        let msg = str::from_utf8(&first_msg.data[1..]).unwrap();
-        let expect_msg_size_result = msg.parse::<u16>();
-        if expect_msg_size_result.is_err() {
-            return Err(SerializeError::IncompleteLine);
-        }
-        let expected_msg_size = expect_msg_size_result.unwrap() * 2;
-        let mut actual_msg_size = 0;
-        for msg in &self.raw_msg_queue {
-            if msg.data[0] == ASCII_CARRIAGE_RETURN {
-                actual_msg_size += 1;
-            }
-            if actual_msg_size == expected_msg_size { break; }
-        }
-        if actual_msg_size < expected_msg_size { return Err(SerializeError::IncompleteCommand) }
-        Ok(expected_msg_size)
+        Ok(readers)
     }
 }
 
-
-
 pub struct TcpServer {
-    redis_clients: Vec<TcpClient>
+    redis_clients: Vec<TcpClient>,
 }
 
 impl TcpServer {
     pub fn new() -> TcpServer {
         TcpServer {
-            redis_clients: Vec::with_capacity(DEFAULT_CLIENT_SIZE)
+            redis_clients: Vec::with_capacity(DEFAULT_CLIENT_SIZE),
         }
     }
 
@@ -178,10 +108,10 @@ impl TcpServer {
         let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
         match listener.accept().await {
-            Ok((stream, addr)) => {
+            Ok((stream, _)) => {
                 self.handle_stream(stream).await?;
-            },
-            Err(e) => println!("couldn't get client {:?}", e)
+            }
+            Err(e) => println!("couldn't get client {:?}", e),
         }
 
         Ok(())
@@ -199,7 +129,7 @@ impl TcpServer {
                 let mut data = [0; 4000];
                 match stream.try_read(&mut data) {
                     Ok(0) => break,
-                    Ok(n) => {
+                    Ok(_) => {
                         if !okay_sent {
                             stream.write_all(OKAY_RESPONSE.as_bytes()).await?;
                             okay_sent = true
@@ -221,38 +151,11 @@ impl TcpServer {
     }
 }
 
-fn is_end_of_line_index(index: usize, buff: &Vec<u8>) -> bool {
-    index < buff.len() &&
-        2 <= index &&
-        buff[index] == ASCII_LINE_FEED &&
-        buff[index-1] == ASCII_CARRIAGE_RETURN
-}
-
-fn get_next_line_idx(eol_index: usize, buff: &[u8]) -> usize {
-    let mut end = eol_index;
-    while end < buff.len() && (buff[end] == ASCII_LINE_FEED || buff[end] == ASCII_CARRIAGE_RETURN) {
-        end += 1;
-    }
-    end
-}
-
-fn get_eol_index(start: usize, buff: &Vec<u8>, buffer_end: usize) -> Result<usize, SerializeError> {
-    let mut end = start;
-
-    while end <= buffer_end && !is_end_of_line_index(end, buff)  {
-        end += 1;
-    }
-
-    if !is_end_of_line_index(end, buff) {
-        return Err(SerializeError::IncompleteLine)
-    }
-
-    Ok(end)
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::server::{get_eol_index, TcpClient};
+    use crate::resp_buffered_reader::RespBufferedReader;
+    use crate::server::TcpClient;
+    use crate::utils::get_eol_index;
 
     const FIRST_LINE_IDX: usize = 1;
     const SECOND_LINE_IDX: usize = 5;
@@ -260,146 +163,147 @@ mod tests {
     fn create_buffer() -> Vec<u8> {
         //    Corresponds to ASCII code
         //   *   5   \r  \n  $   5   \r  \n   h    e    l    l    o  \r  \n
-        vec![42, 53, 13, 10, 36, 53, 13, 10, 104, 101, 108, 108, 11, 13, 10]
+        vec![
+            42, 53, 13, 10, 36, 53, 13, 10, 104, 101, 108, 108, 11, 13, 10,
+        ]
     }
-    
+
     fn create_hello() -> Vec<u8> {
         vec![
-            42,53,13,10,            // *5
-            36,53,13,10,            // $5
-            104,101,108,108,111,13,10, // hello
-            36,49,13,10,            // $1
-            51,13,10,               // 3
-            36,52,13,10,            // $4
-            97,117,116,104,13,10,   // auth
-            36,52,13,10,            // $4
-            114,111,111,116,13,10,  // root
-            36,51,13,10,            // $3
-            97,98,99,13,10          // abc
+            42, 53, 13, 10, // *5
+            36, 53, 13, 10, // $5
+            104, 101, 108, 108, 111, 13, 10, // hello
+            36, 49, 13, 10, // $1
+            51, 13, 10, // 3
+            36, 52, 13, 10, // $4
+            97, 117, 116, 104, 13, 10, // auth
+            36, 52, 13, 10, // $4
+            114, 111, 111, 116, 13, 10, // root
+            36, 51, 13, 10, // $3
+            97, 98, 99, 13, 10, // abc
         ]
     }
 
     fn create_set_info() -> Vec<u8> {
         vec![
-            42,52,13,10,    // *4
-            36,54,13,10,    // $6
-            99,108,105,101,110,116,13,10, // client
-            36,55,13,10,    // $7
-            115,101,116,105,110,102,111,13,10, // setinfo
-            36,56,13,10,    // $8
-            76,73,66,45,78,65,77,69,13,10, // LIB-NAME
-            36,49,57,13,10, // $19
-            103,111,45,114,101,100,105,115,40,44,103,111,49,46,50,50,46,55,41,13,10, // go-redis(,go1.22.7)
-            42,52,13,10,    // *4
-            36,54,13,10,    // $6
-            99,108,105,101,110,116,13,10, // client
-            36,55,13,10,    // $7
-            115,101,116,105,110,102,111,13,10, // setinfo
-            36,55,13,10,    // $7
-            76,73,66,45,86,69,82,13,10, // LIB-VER
-            36,53,13,10,    // $5
-            57,46,54,46,49,13,10 // 9.6.1
+            42, 52, 13, 10, // *4
+            36, 54, 13, 10, // $6
+            99, 108, 105, 101, 110, 116, 13, 10, // client
+            36, 55, 13, 10, // $7
+            115, 101, 116, 105, 110, 102, 111, 13, 10, // setinfo
+            36, 56, 13, 10, // $8
+            76, 73, 66, 45, 78, 65, 77, 69, 13, 10, // LIB-NAME
+            36, 49, 57, 13, 10, // $19
+            103, 111, 45, 114, 101, 100, 105, 115, 40, 44, 103, 111, 49, 46, 50, 50, 46, 55, 41,
+            13, 10, // go-redis(,go1.22.7)
+            42, 52, 13, 10, // *4
+            36, 54, 13, 10, // $6
+            99, 108, 105, 101, 110, 116, 13, 10, // client
+            36, 55, 13, 10, // $7
+            115, 101, 116, 105, 110, 102, 111, 13, 10, // setinfo
+            36, 55, 13, 10, // $7
+            76, 73, 66, 45, 86, 69, 82, 13, 10, // LIB-VER
+            36, 53, 13, 10, // $5
+            57, 46, 54, 46, 49, 13, 10, // 9.6.1
         ]
     }
 
     fn create_ping() -> Vec<u8> {
         vec![
-            42,49,13,10,            // *1
-            36,52,13,10,            // $4
-            112,105,110,103,13,10   // ping
+            42, 49, 13, 10, // *1
+            36, 52, 13, 10, // $4
+            112, 105, 110, 103, 13, 10, // ping
         ]
     }
 
     fn create_lpush_and_sadd_cmds() -> Vec<u8> {
         vec![
-            42,53,13,10, // *5
-            36,53,13,10, // $5
-            108,112,117,115,104,13,10, // lpush
-            36,52,13,10, // $4
-            107,101,121,49,13,10, // key1
-            36,53,13,10, // $5
-            118,97,108,117,101,13,10, // value
-            36,49,13,10, // $1
-            55,13,10, // 7
-            36,49,13,10, // $1
-            56,13,10, // 8
-            42,51,13,10, // *3
-            36,52,13,10, // $4
-            115,97,100,100,13,10, // sadd
-            36,52,13,10, // $4
-            107,101,121,50,13,10, // key 2
-            36,54,13,10, // $6
-            118,97,108,117,101,51,13,10, // value3
-            42,53,13,10, // *5
-            36,53,13,10, // $5
-            108,112,117,115,104,13,10, // lpush
-            36,52,13,10, // $4
-            107,101,121,51,13,10, // key 3
-            36,53,13,10, // $5
-            118,97,108,117,101,13,10, // value
-            36,49,13,10, // $1
-            55,13,10, // 7
-            36,49,13,10, // $1
-            56,13,10 // 8
+            42, 53, 13, 10, // *5
+            36, 53, 13, 10, // $5
+            108, 112, 117, 115, 104, 13, 10, // lpush
+            36, 52, 13, 10, // $4
+            107, 101, 121, 49, 13, 10, // key1
+            36, 53, 13, 10, // $5
+            118, 97, 108, 117, 101, 13, 10, // value
+            36, 49, 13, 10, // $1
+            55, 13, 10, // 7
+            36, 49, 13, 10, // $1
+            56, 13, 10, // 8
+            42, 51, 13, 10, // *3
+            36, 52, 13, 10, // $4
+            115, 97, 100, 100, 13, 10, // sadd
+            36, 52, 13, 10, // $4
+            107, 101, 121, 50, 13, 10, // key 2
+            36, 54, 13, 10, // $6
+            118, 97, 108, 117, 101, 51, 13, 10, // value3
+            42, 53, 13, 10, // *5
+            36, 53, 13, 10, // $5
+            108, 112, 117, 115, 104, 13, 10, // lpush
+            36, 52, 13, 10, // $4
+            107, 101, 121, 51, 13, 10, // key 3
+            36, 53, 13, 10, // $5
+            118, 97, 108, 117, 101, 13, 10, // value
+            36, 49, 13, 10, // $1
+            55, 13, 10, // 7
+            36, 49, 13, 10, // $1
+            56, 13, 10, // 8
         ]
     }
 
     fn create_chunked_transmission() -> Vec<Vec<u8>> {
         vec![
             vec![
-                42,53,13,10, // *5
-                36,53,13,10, // $5
-                108,112,117, // lpush
-                0,0,0,0,0,0
+                42, 53, 13, 10, // *5
+                36, 53, 13, 10, // $5
+                108, 112, 117, // lpush
+                0, 0, 0, 0, 0, 0,
             ],
             vec![
-                115,104,13,10, // lpush
-                36,52,13,10, // $4
-                107,101,121,49,13,10, // key1
-                36,53,13,10, // $5
-                118,97,108,
-                0,0,0,0,0,0,
+                115, 104, 13, 10, // lpush
+                36, 52, 13, 10, // $4
+                107, 101, 121, 49, 13, 10, // key1
+                36, 53, 13, 10, // $5
+                118, 97, 108, 0, 0, 0, 0, 0, 0,
             ],
             vec![
-                117,101,13,10, // value
-                36,49,13,10, // $1
-                55,13,10, // 7
-                36,49,13,10, // $1
-                56,13,10, // 8
-                0,0,0,0,0,0,
+                117, 101, 13, 10, // value
+                36, 49, 13, 10, // $1
+                55, 13, 10, // 7
+                36, 49, 13, 10, // $1
+                56, 13, 10, // 8
+                0, 0, 0, 0, 0, 0,
             ],
             vec![
-                42,51,13,10, // *3
-                36,52,13,10, // $4
-                115,97,100,100,13,10, // sadd
-                36,52,13,10, // $4
-                107,101,121,50,13,10, // key 2
-                36,54,13,10, // $6
-                118,97,108,117,101,51,13,10, // value3
-                42,53,13,10, // *5
-                36,53,13,10, // $5
-                108,112,117,115,104,13,10, // lpush
-                0,0,0,0,0,0,
+                42, 51, 13, 10, // *3
+                36, 52, 13, 10, // $4
+                115, 97, 100, 100, 13, 10, // sadd
+                36, 52, 13, 10, // $4
+                107, 101, 121, 50, 13, 10, // key 2
+                36, 54, 13, 10, // $6
+                118, 97, 108, 117, 101, 51, 13, 10, // value3
+                42, 53, 13, 10, // *5
+                36, 53, 13, 10, // $5
+                108, 112, 117, 115, 104, 13, 10, // lpush
+                0, 0, 0, 0, 0, 0,
             ],
             vec![
-                36,52,13,10, // $4
-                107,101,121,51,13,10, // key 3
-                36,53,13,10, // $5
-                118,97,108,117,101,13,10, // value
-                36,49,13,10, // $1
-                55,13,10, // 7
-                36,49,13,10, // $1
-                56,13,10,0 // 8
-            ]
+                36, 52, 13, 10, // $4
+                107, 101, 121, 51, 13, 10, // key 3
+                36, 53, 13, 10, // $5
+                118, 97, 108, 117, 101, 13, 10, // value
+                36, 49, 13, 10, // $1
+                55, 13, 10, // 7
+                36, 49, 13, 10, // $1
+                56, 13, 10, 0, // 8
+            ],
         ]
     }
 
     #[test]
     fn test_find_next_cr() {
         let buff = &create_buffer();
-        let buff_end = buff.len();
-        let result = get_eol_index(1, &buff, buff_end).unwrap();
-        let expected = 1;
+        let result = get_eol_index(1, &buff).unwrap();
+        let expected = 3;
         assert_eq!(result, expected);
     }
 
@@ -407,11 +311,11 @@ mod tests {
     fn test_client_buffer_process() {
         let mut client = TcpClient::new("0.0.0.0".to_string());
         let chunked_buffers = create_chunked_transmission();
+        let mut raw_cmd = RespBufferedReader::new();
         for chunk in chunked_buffers.into_iter() {
-            &client.read_buff(&chunk);
+            &client.read_buff(&mut raw_cmd, &chunk).unwrap();
         }
-        assert_eq!(client.raw_msg_queue.len(), 3);
+        let expected: u32 = 3;
+        assert_eq!(client.cmds_from_client, expected);
     }
-
-
 }
