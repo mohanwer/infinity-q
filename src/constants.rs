@@ -3,6 +3,7 @@ pub const ASCII_LINE_FEED: u8 = 10;
 pub const ASCII_CARRIAGE_RETURN: u8 = 13;
 pub const ASCII_ASTERISK: u8 = 42;
 pub const ASCII_BULK_STRING: u8 = 36;
+pub const RESP_BUFFER_SIZE: usize = 4096;
 
 pub const OKAY_RESPONSE: &str = "%7\r\n\
 +server\r\n\

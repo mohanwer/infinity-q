@@ -3,7 +3,7 @@ use crate::server::SerializeError;
 use std::str;
 
 pub fn index_is_at_delimiter(index: usize, buff: &[u8]) -> bool {
-    index <= buff.len()
+    index < buff.len()
         && 2 <= index
         && buff[index] == ASCII_LINE_FEED
         && buff[index - 1] == ASCII_CARRIAGE_RETURN
@@ -12,7 +12,7 @@ pub fn index_is_at_delimiter(index: usize, buff: &[u8]) -> bool {
 pub fn get_eol_index(start: usize, buff: &[u8]) -> Result<usize, SerializeError> {
     let mut end = start;
 
-    while end <= buff.len() && buff[end] != 0 && !index_is_at_delimiter(end, buff) {
+    while end < buff.len() - 1 && buff[end] != 0 && !index_is_at_delimiter(end, buff) {
         end += 1;
     }
 
@@ -26,11 +26,16 @@ pub fn get_eol_index(start: usize, buff: &[u8]) -> Result<usize, SerializeError>
 pub fn get_zero_byte_index(start: usize, buff: &[u8]) -> usize {
     let mut end = start;
 
-    while end <= buff.len() && buff[end] != 0 {
+    while end + 1 < buff.len() - 1 && buff[end + 1] > 0 {
         end += 1;
     }
 
     end
+}
+
+pub fn remove_empty_data(buff: &[u8]) -> &[u8] {
+    let end_of_buff = get_zero_byte_index(0, buff);
+    &buff[..=end_of_buff]
 }
 
 pub fn read_line(start: usize, buff: &[u8]) -> &[u8] {
@@ -40,7 +45,7 @@ pub fn read_line(start: usize, buff: &[u8]) -> &[u8] {
     &buff[start..=read_idx_end]
 }
 
-pub fn from_utf8_without_delimiter(buff: &[u8]) -> Result<&str, std::str::Utf8Error> {
+pub fn from_utf8_without_delimiter(buff: &[u8]) -> Result<&str, SerializeError> {
     let buff_end = buff.len() - 1;
     let buff_read_to: usize;
 
@@ -49,6 +54,7 @@ pub fn from_utf8_without_delimiter(buff: &[u8]) -> Result<&str, std::str::Utf8Er
     } else {
         buff_end
     };
-    let res = str::from_utf8(&buff[..=buff_read_to]);
+    let res =
+        str::from_utf8(&buff[..=buff_read_to]).map_err(|_| SerializeError::UnsupportedTextEncoding);
     Ok(res?)
 }

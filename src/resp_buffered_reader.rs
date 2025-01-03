@@ -27,7 +27,7 @@ pub struct RespBufferedReader {
     size: Option<usize>,
     last_read_idx: usize,
     delimiter_cnt: usize,
-    pub(crate) complete: bool,
+    pub(crate) reached_end_of_msg: bool,
     read_index: usize,
 }
 
@@ -48,6 +48,16 @@ impl RespBufferedReader {
         };
         let _ = cmd.extend(data.as_slice());
         cmd
+    }
+
+    pub fn reset(&mut self) {
+        self.data.clear();
+        self.eol_exists = false;
+        self.size = None;
+        self.last_read_idx = 0;
+        self.delimiter_cnt = 0;
+        self.reached_end_of_msg = false;
+        self.read_index = 0;
     }
 
     pub fn size(&mut self) -> Result<usize> {
@@ -100,25 +110,20 @@ impl RespBufferedReader {
                 self.delimiter_cnt += 1;
             }
         }
-        self.complete = self.delimiter_cnt == expected_delimiter_cnt;
-        Ok(self.complete)
+        self.reached_end_of_msg = self.delimiter_cnt == expected_delimiter_cnt;
+        Ok(self.reached_end_of_msg)
     }
 
     pub fn extend(&mut self, buff: &[u8]) -> Result<bool> {
-        let mut read_to = buff.len() - 1;
-        while read_to > 0 && buff[read_to] == 0 {
-            // we don't read in null portions of the buffer
-            read_to -= 1;
-        }
-        self.data.extend(&buff[0..=read_to]);
+        self.data.extend(buff);
         Ok(self.all_lines_received()?)
     }
 
-    pub fn read_line(&mut self, buff: &[u8]) -> Result<RespBuffReadResult> {
+    pub fn read(&mut self, buff: &[u8]) -> Result<usize> {
         let mut read_cursor: usize = 0;
-        while read_cursor < buff.len() && buff[read_cursor] != 0 {
-            let line = read_line(read_cursor, &buff);
-            read_cursor += line.len() + 1;
+        while read_cursor < buff.len() {
+            let line = read_line(read_cursor, buff);
+            read_cursor += line.len();
             let msg_processing_result = self.extend(&line);
             match msg_processing_result {
                 Err(err) => match &err {
@@ -132,23 +137,16 @@ impl RespBufferedReader {
                 },
                 Ok(command_transmission_complete) => {
                     if command_transmission_complete {
-                        return Ok(RespBuffReadResult {
-                            bytes_read: read_cursor,
-                            end_of_message_reached: true,
-                        });
+                        return Ok(read_cursor);
                     }
                 }
             }
         }
 
-        Ok(RespBuffReadResult {
-            bytes_read: read_cursor,
-            end_of_message_reached: false,
-        })
+        Ok(read_cursor)
     }
-
-    pub fn write_to_utf8(mut self) -> Result<String> {
-        Ok(String::from_utf8(self.data).map_err(|_| SerializeError::UnsupportedTextEncoding)?)
+    pub fn write_to_utf8(&self) -> Result<String> {
+        String::from_utf8(self.data.clone()).map_err(|_| SerializeError::UnsupportedTextEncoding)
     }
 }
 
@@ -173,7 +171,6 @@ mod tests {
             114, 111, 111, 116, 13, 10, // root
             36, 51, 13, 10, // $3
             97, 98, 99, 13, 10, // abc
-            0, 0, 0, 0,
         ])
     }
 

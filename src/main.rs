@@ -4,7 +4,9 @@ mod constants;
 mod queue;
 mod resp;
 mod resp_buffered_reader;
+mod resp_reader;
 mod server;
+mod test_utils;
 mod utils;
 
 #[tokio::main]
