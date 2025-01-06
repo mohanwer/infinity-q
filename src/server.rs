@@ -79,11 +79,11 @@ impl TcpClient {
     pub fn read_buff(
         &mut self,
         buff: [u8; RESP_BUFFER_SIZE],
-        buff_bytes: usize,
+        read_end: usize,
     ) -> Result<(), SerializeError> {
         let mut bytes_read = 0;
-        while bytes_read < buff_bytes {
-            bytes_read += self.resp_buff_reader.read(bytes_read, buff_bytes, buff)?;
+        while bytes_read < read_end {
+            bytes_read += self.resp_buff_reader.read(bytes_read, read_end, buff)?;
             if self.resp_buff_reader.reached_end_of_msg {
                 let msg_utf8: String = self.resp_buff_reader.write_to_utf8()?;
                 self.msg_from_client += 1;
@@ -155,7 +155,8 @@ impl TcpServer {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::create_buffer;
+    use crate::server::TcpClient;
+    use crate::test_utils::*;
     use crate::utils::get_eol_index;
 
     #[test]
@@ -166,14 +167,15 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    // #[test]
-    // fn test_client_buffer_process() {
-    //     let mut client = TcpClient::new("0.0.0.0".to_string());
-    //     let chunked_buffers = create_chunked_transmission();
-    //     for chunk in chunked_buffers.into_iter() {
-    //         client.read_buff(&chunk).unwrap();
-    //     }
-    //     let expected: u32 = 3;
-    //     assert_eq!(client.msg_from_client, expected);
-    // }
+    #[test]
+    fn test_client_buffer_process() {
+        let mut client = TcpClient::new("0.0.0.0".to_string());
+        let chunked_buffers = create_chunked_transmission();
+        for chunk in chunked_buffers.into_iter() {
+            let buff = convert_to_arr(&chunk);
+            client.read_buff(buff, chunk.len() - 1).unwrap();
+        }
+        let expected: u32 = 3;
+        assert_eq!(client.msg_from_client, expected);
+    }
 }

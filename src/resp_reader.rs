@@ -59,8 +59,9 @@ impl RespReader {
             }
             self.delimiters_read += 1;
         }
-        let continue_reading = self.expected_delimiter_cnt == 0
-            || (self.delimiters_read != self.expected_delimiter_cnt);
+        self.reached_end_of_msg =
+            self.expected_delimiter_cnt != 0 && self.delimiters_read == self.expected_delimiter_cnt;
+        let continue_reading = !self.reached_end_of_msg && i < buff.len();
         Ok(continue_reading)
     }
 
@@ -103,5 +104,15 @@ mod tests {
         let mut r = RespReader::new();
         let bytes_read = r.read(0, hello.len(), buff).unwrap();
         assert_eq!(bytes_read, hello.len() - 1);
+    }
+
+    #[test]
+    fn test_read_chunked_transmission() {
+        let mut reader = RespReader::new();
+        let cmds = create_lpush_and_sadd_cmds();
+        let mut buffer = convert_to_arr(&cmds);
+        let bytes_read = reader.read(0, buffer.len(), buffer).unwrap();
+        assert_eq!(reader.reached_end_of_msg, true);
+        assert_eq!(bytes_read, 49);
     }
 }
