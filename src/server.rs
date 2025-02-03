@@ -81,9 +81,9 @@ impl TcpClient {
         buff: [u8; RESP_BUFFER_SIZE],
         read_end: usize,
     ) -> Result<(), SerializeError> {
-        let mut bytes_read = 0;
-        while bytes_read < read_end {
-            bytes_read += self.resp_buff_reader.read(bytes_read, read_end, buff)?;
+        let mut read_start = 0;
+        while read_start < read_end {
+            read_start += self.resp_buff_reader.read(&buff[read_start..=read_end])? + 1;
             if self.resp_buff_reader.reached_end_of_msg {
                 let msg_utf8: String = self.resp_buff_reader.write_to_utf8()?;
                 self.msg_from_client += 1;

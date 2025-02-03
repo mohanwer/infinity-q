@@ -54,7 +54,9 @@ pub fn from_utf8_without_delimiter(buff: &[u8]) -> Result<&str, SerializeError> 
     } else {
         buff_end
     };
-    let res =
-        str::from_utf8(&buff[..=buff_read_to]).map_err(|_| SerializeError::UnsupportedTextEncoding);
+    let res = str::from_utf8(&buff[..=buff_read_to]).map_err(|err| {
+        println!("{}", err);
+        SerializeError::UnsupportedTextEncoding
+    });
     Ok(res?)
 }

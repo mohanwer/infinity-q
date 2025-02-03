@@ -1,6 +1,6 @@
-use crate::constants::{ASCII_ASTERISK, RESP_BUFFER_SIZE};
+use crate::constants::{ASCII_LINE_FEED, RESP_BUFFER_SIZE, RESP_COMMAND_ARG_SIZE};
 use crate::server::SerializeError;
-use crate::utils::{from_utf8_without_delimiter, index_is_at_delimiter};
+use std::str;
 
 pub type Result<T> = std::result::Result<T, SerializeError>;
 
@@ -12,9 +12,11 @@ pub struct RespBuffer {
 
 #[derive(Debug, Clone)]
 pub struct RespReader {
-    data: Vec<RespBuffer>,
+    data: Vec<u8>,
+    data_line_break_positions: Vec<usize>,
+    data_read: usize,
+    size_set: bool,
     delimiters_read: u32,
-    read_buffer_size: usize,
     pub expected_delimiter_cnt: u32,
     pub reached_end_of_msg: bool,
 }
@@ -22,73 +24,62 @@ pub struct RespReader {
 impl RespReader {
     pub fn new() -> Self {
         RespReader {
-            data: Vec::new(),
+            data: Vec::with_capacity(RESP_BUFFER_SIZE),
+            data_line_break_positions: Vec::with_capacity(RESP_COMMAND_ARG_SIZE),
+            data_read: 0,
+            size_set: false,
             delimiters_read: 0,
             expected_delimiter_cnt: 0,
-            read_buffer_size: RESP_BUFFER_SIZE,
             reached_end_of_msg: false,
         }
     }
 
     pub fn reset(&mut self) {
         self.data.clear();
+        self.data_line_break_positions.clear();
+        self.size_set = false;
         self.delimiters_read = 0;
-        self.read_buffer_size = 0;
         self.expected_delimiter_cnt = 0;
         self.reached_end_of_msg = false;
     }
 
-    pub fn try_read_size(&self, buff: &[u8]) -> Result<u32> {
-        if buff.len() < 4 || buff[0] != ASCII_ASTERISK {
-            return Err(SerializeError::IncompleteCommand);
-        }
-        let size_utf8 = from_utf8_without_delimiter(&buff[1..])?;
-        let size = size_utf8
-            .parse::<u32>()
-            .map_err(|_| SerializeError::UnsupportedTextEncoding)?;
-        // The expected command size for the array incoming is multiplied by two
-        // Each array element will contain the size and then element.
-        // One is added in because the first element in the array is array size.
-        Ok(size * 2 + 1)
-    }
+    pub fn read(&mut self, buff: &[u8]) -> Result<usize> {
+        let mut i = 0;
+        while i < buff.len() && !self.reached_end_of_msg {
+            self.data.push(buff[i]);
+            if buff[i] == ASCII_LINE_FEED {
+                self.data_line_break_positions.push(self.data.len());
+                self.delimiters_read += 1;
 
-    fn read_byte(&mut self, i: usize, buff: &[u8]) -> Result<bool> {
-        if index_is_at_delimiter(i, buff) {
-            if self.expected_delimiter_cnt == 0 {
-                self.expected_delimiter_cnt = self.try_read_size(&buff[..=i])?;
+                if !self.size_set {
+                    let size_arg_end = i - 2;
+                    let size_arg_start = 1;
+                    let size_utf8 = str::from_utf8(&self.data[size_arg_start..=size_arg_end])
+                        .map_err(|err| {
+                            println!("{}", err);
+                            SerializeError::UnsupportedTextEncoding
+                        })?;
+                    let size = size_utf8.parse::<u32>().map_err(|err| {
+                        println!("{}", err);
+                        SerializeError::UnsupportedTextEncoding
+                    })?;
+                    self.size_set = true;
+                    self.expected_delimiter_cnt = size * 2 + 1;
+                } else {
+                    self.reached_end_of_msg = self.delimiters_read == self.expected_delimiter_cnt
+                }
             }
-            self.delimiters_read += 1;
-        }
-        self.reached_end_of_msg =
-            self.expected_delimiter_cnt != 0 && self.delimiters_read == self.expected_delimiter_cnt;
-        let continue_reading = !self.reached_end_of_msg && i < buff.len();
-        Ok(continue_reading)
-    }
 
-    pub fn read(
-        &mut self,
-        read_start: usize,
-        read_end: usize,
-        buff: [u8; RESP_BUFFER_SIZE],
-    ) -> Result<usize> {
-        let mut i = read_start;
-        while self.read_byte(i, &buff[..read_end])? {
-            i += 1
+            i += 1;
         }
-        self.data.push(RespBuffer {
-            data: buff,
-            bytes_read: i,
-        });
-        Ok(i)
+
+        Ok(i - 1)
     }
 
     pub fn write_to_utf8(&self) -> Result<String> {
-        let mut utf_data = Vec::with_capacity(self.data.len());
-        for i in 0..self.data.len() {
-            let resp_buffer = &self.data[i];
-            utf_data[i] = String::from_utf8_lossy(&resp_buffer.data[..=resp_buffer.bytes_read]);
-        }
-        Ok(utf_data.join(""))
+        let msg = String::from_utf8(self.data.clone())
+            .map_err(|_| SerializeError::UnsupportedTextEncoding)?;
+        Ok(msg)
     }
 }
 
@@ -102,7 +93,7 @@ mod tests {
         let hello = create_hello();
         let buff = convert_to_arr(&hello);
         let mut r = RespReader::new();
-        let bytes_read = r.read(0, hello.len(), buff).unwrap();
+        let bytes_read = r.read(&buff).unwrap();
         assert_eq!(bytes_read, hello.len() - 1);
     }
 
@@ -110,8 +101,8 @@ mod tests {
     fn test_read_chunked_transmission() {
         let mut reader = RespReader::new();
         let cmds = create_lpush_and_sadd_cmds();
-        let mut buffer = convert_to_arr(&cmds);
-        let bytes_read = reader.read(0, buffer.len(), buffer).unwrap();
+        let buffer = convert_to_arr(&cmds);
+        let bytes_read = reader.read(&buffer).unwrap();
         assert_eq!(reader.reached_end_of_msg, true);
         assert_eq!(bytes_read, 49);
     }
