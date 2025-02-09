@@ -53,7 +53,7 @@ struct TcpClient {
     msg_from_client: u32,
     msg_cnt_to_client: u32,
     resp_buff_reader: RespReader,
-    raw_msg_queue: VecDeque<String>,
+    raw_msg_queue: VecDeque<(Vec<u8>, Vec<usize>)>,
 }
 
 #[derive(Debug)]
@@ -85,14 +85,15 @@ impl TcpClient {
         while read_start < read_end {
             read_start += self.resp_buff_reader.read(&buff[read_start..=read_end])? + 1;
             if self.resp_buff_reader.reached_end_of_msg {
-                let msg_utf8: String = self.resp_buff_reader.write_to_utf8()?;
+                let msg = self.resp_buff_reader.reset();
                 self.msg_from_client += 1;
-                self.raw_msg_queue.push_back(msg_utf8);
-                self.resp_buff_reader.reset();
+                self.raw_msg_queue.push_back(msg);
             }
         }
         Ok(())
     }
+
+    // pub fn read_msg_queue(&mut self) -> Result<>
 }
 
 pub struct TcpServer {

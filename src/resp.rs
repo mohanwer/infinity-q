@@ -34,6 +34,8 @@ impl fmt::Display for RespError {
 
 pub type Result<T> = std::result::Result<T, RespError>;
 
+const LPUSH: [u8; 5] = [108, 112, 117, 115, 104];
+
 #[derive(Debug, EnumString)]
 enum CommandSet {
     HELLO,
@@ -57,7 +59,7 @@ pub enum Cmd {
     },
     LPUSH {
         key: String,
-        elements: Vec<String>,
+        elements: Vec<Vec<u8>>,
     },
     HELLO {
         auth: Option<String>,
@@ -74,6 +76,8 @@ pub enum Cmd {
 
 const ADMIN: &str = "admin";
 const ADMIN_PW: &str = "password";
+const RESP_MSG_DATA_TYPE_LINE: usize = 2;
+const RESP_LPUSH_KEY_LINE: usize = 4;
 
 fn return_next<'a>(payload: &mut Split<'a, &str>) -> Result<&'a str> {
     match payload.next() {
@@ -84,6 +88,35 @@ fn return_next<'a>(payload: &mut Split<'a, &str>) -> Result<&'a str> {
             }
             Ok(v)
         }
+    }
+}
+
+pub fn create_line_indexes(line_breaks: &Vec<usize>) -> Vec<(usize, usize)> {
+    let mut lines = Vec::with_capacity(line_breaks.len());
+    for i in 1..line_breaks.len() {
+        lines[i - 1] = (line_breaks[i - 1] + 1, line_breaks[i] - 2);
+    }
+    lines
+}
+
+pub fn read_raw_msg(mut msg: Vec<u8>, line_breaks: &Vec<usize>) -> Result<Cmd> {
+    if line_breaks.len() < 3 {
+        return Err(RespError::IncompleteCommand);
+    }
+    let arg_count = line_breaks.len();
+    let msg_line_indexes = create_line_indexes(line_breaks);
+    let (read_start, read_end) = msg_line_indexes[RESP_MSG_DATA_TYPE_LINE];
+    let msg_type = std::str::from_utf8(&msg[read_start..=read_end])
+        .map_err(|_| RespError::InvalidArgument("invalid message type".into()))?;
+    if msg_type == "LPUSH" {
+        let mut elements = Vec::with_capacity(line_breaks.len());
+        let (key_start, key_end) = msg_line_indexes[RESP_LPUSH_KEY_LINE];
+        let key = String::from_utf8(msg[key_start..=key_end].to_vec());
+        for i in (RESP_LPUSH_KEY_LINE + 2..arg_count).step(2) {
+            let (read_start, read_end) = msg_line_indexes[i];
+            elements.push(msg[read_start..=read_end].to_vec());
+        }
+        return Ok(Cmd::LPUSH { key, elements });
     }
 }
 

@@ -34,13 +34,17 @@ impl RespReader {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.data.clear();
+    pub fn reset(&mut self) -> (Vec<u8>, Vec<usize>) {
+        let data = self.data.clone();
+        let line_breaks = self.data_line_break_positions.clone();
         self.data_line_break_positions.clear();
         self.size_set = false;
         self.delimiters_read = 0;
         self.expected_delimiter_cnt = 0;
         self.reached_end_of_msg = false;
+
+        self.data = Vec::with_capacity(RESP_BUFFER_SIZE);
+        (data, line_breaks)
     }
 
     pub fn read(&mut self, buff: &[u8]) -> Result<usize> {
@@ -50,19 +54,14 @@ impl RespReader {
             if buff[i] == ASCII_LINE_FEED {
                 self.data_line_break_positions.push(self.data.len());
                 self.delimiters_read += 1;
-
                 if !self.size_set {
                     let size_arg_end = i - 2;
                     let size_arg_start = 1;
                     let size_utf8 = str::from_utf8(&self.data[size_arg_start..=size_arg_end])
-                        .map_err(|err| {
-                            println!("{}", err);
-                            SerializeError::UnsupportedTextEncoding
-                        })?;
-                    let size = size_utf8.parse::<u32>().map_err(|err| {
-                        println!("{}", err);
-                        SerializeError::UnsupportedTextEncoding
-                    })?;
+                        .map_err(|err| SerializeError::UnsupportedTextEncoding)?;
+                    let size = size_utf8
+                        .parse::<u32>()
+                        .map_err(|err| SerializeError::UnsupportedTextEncoding)?;
                     self.size_set = true;
                     self.expected_delimiter_cnt = size * 2 + 1;
                 } else {
@@ -76,9 +75,9 @@ impl RespReader {
         Ok(i - 1)
     }
 
-    pub fn write_to_utf8(&self) -> Result<String> {
-        let msg = String::from_utf8(self.data.clone())
-            .map_err(|_| SerializeError::UnsupportedTextEncoding)?;
+    pub fn write_to_utf8(&self) -> Result<&str> {
+        let msg =
+            std::str::from_utf8(&self.data).map_err(|_| SerializeError::UnsupportedTextEncoding)?;
         Ok(msg)
     }
 }
