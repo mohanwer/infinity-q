@@ -1,4 +1,4 @@
-use crate::constants::RESP_BUFFER_SIZE;
+use crate::constants::{ASCII_CARRIAGE_RETURN, ASCII_LINE_FEED, RESP_BUFFER_SIZE};
 
 pub fn convert_to_arr(v: &Vec<u8>) -> [u8; RESP_BUFFER_SIZE] {
     let mut arr = [0u8; RESP_BUFFER_SIZE];
@@ -6,6 +6,23 @@ pub fn convert_to_arr(v: &Vec<u8>) -> [u8; RESP_BUFFER_SIZE] {
         arr[i] = item;
     }
     arr
+}
+
+pub fn create_line_breaks(msg: &Vec<u8>) -> Vec<usize> {
+    let mut line_breaks = Vec::new();
+    let msg_size = msg.len();
+    if msg_size < 2 {
+        return line_breaks;
+    }
+    let mut i = 1;
+    while i < msg_size {
+        if msg[i] == ASCII_LINE_FEED {
+            line_breaks.push(i);
+        }
+        i += 1;
+    }
+
+    line_breaks
 }
 
 pub fn create_buffer() -> Vec<u8> {
@@ -20,15 +37,25 @@ pub fn create_hello() -> Vec<u8> {
     vec![
         42, 53, 13, 10, // *5
         36, 53, 13, 10, // $5
+        104, 101, 108, 108, 111, 13, 10, // hello  3
+        36, 49, 13, 10, // $1 4
+        51, 13, 10, // 3
+        36, 52, 13, 10, // $4 6
+        97, 117, 116, 104, 13, 10, // auth  7
+        36, 52, 13, 10, // $4
+        114, 111, 111, 116, 13, 10, // root  9
+        36, 51, 13, 10, // $3
+        97, 98, 99, 13, 10, // abc
+    ]
+}
+
+pub fn create_anonymous_hello() -> Vec<u8> {
+    vec![
+        42, 50, 13, 10, // *2
+        36, 53, 13, 10, // $5
         104, 101, 108, 108, 111, 13, 10, // hello
         36, 49, 13, 10, // $1
         51, 13, 10, // 3
-        36, 52, 13, 10, // $4
-        97, 117, 116, 104, 13, 10, // auth
-        36, 52, 13, 10, // $4
-        114, 111, 111, 116, 13, 10, // root
-        36, 51, 13, 10, // $3
-        97, 98, 99, 13, 10, // abc
     ]
 }
 
@@ -58,8 +85,6 @@ pub fn create_set_info() -> Vec<u8> {
 
 pub fn create_ping() -> Vec<u8> {
     vec![
-        42, 49, 13, 10, // *1
-        36, 52, 13, 10, // $4
         112, 105, 110, 103, 13, 10, // ping
     ]
 }
@@ -96,6 +121,27 @@ pub fn create_lpush_and_sadd_cmds() -> Vec<u8> {
         36, 49, 13, 10, // $1
         56, 13, 10, // 8
     ]
+}
+
+pub fn serialize_to_resp(values: Vec<&str>) -> Vec<u8> {
+    let mut v = Vec::new();
+    let line_break = [ASCII_CARRIAGE_RETURN, ASCII_LINE_FEED];
+
+    v.push(42);
+    v.extend(values.len().to_string().as_bytes());
+    v.extend(line_break);
+
+    for value in values {
+        // Add the size of value
+        v.push(36);
+        v.extend(value.len().to_string().as_bytes());
+        v.extend(line_break);
+
+        // Add value itself
+        v.extend_from_slice(value.as_bytes());
+        v.extend(line_break);
+    }
+    v
 }
 
 pub fn create_chunked_transmission() -> Vec<Vec<u8>> {
@@ -142,4 +188,18 @@ pub fn create_chunked_transmission() -> Vec<Vec<u8>> {
             56, 13, 10, // 8
         ],
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_converts_args_to_resp() {
+        let input_args = vec!["hello", "3"];
+        let expected_hello_cmd = create_anonymous_hello();
+        let actual_result = serialize_to_resp(input_args);
+
+        assert_eq!(actual_result, expected_hello_cmd);
+    }
 }

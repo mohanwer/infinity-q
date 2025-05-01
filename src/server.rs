@@ -1,5 +1,7 @@
 use crate::constants::{DEFAULT_CLIENT_SIZE, OKAY_RESPONSE, RESP_BUFFER_SIZE};
-use crate::resp_reader::RespReader;
+use crate::resp::msg::RespMsg;
+use crate::resp::reader::RespReader;
+use crate::resp::result::RespError;
 use std::collections::VecDeque;
 use std::fmt::Formatter;
 use std::string::FromUtf8Error;
@@ -53,7 +55,7 @@ struct TcpClient {
     msg_from_client: u32,
     msg_cnt_to_client: u32,
     resp_buff_reader: RespReader,
-    raw_msg_queue: VecDeque<(Vec<u8>, Vec<usize>)>,
+    raw_msg_queue: VecDeque<RespMsg>,
 }
 
 #[derive(Debug)]
@@ -80,12 +82,12 @@ impl TcpClient {
         &mut self,
         buff: [u8; RESP_BUFFER_SIZE],
         read_end: usize,
-    ) -> Result<(), SerializeError> {
+    ) -> Result<(), RespError> {
         let mut read_start = 0;
         while read_start < read_end {
             read_start += self.resp_buff_reader.read(&buff[read_start..=read_end])? + 1;
             if self.resp_buff_reader.reached_end_of_msg {
-                let msg = self.resp_buff_reader.reset();
+                let msg = self.resp_buff_reader.reset()?;
                 self.msg_from_client += 1;
                 self.raw_msg_queue.push_back(msg);
             }

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4.38"
+crossbeam-channel = "0.5.15"
 serde = { version = "1.0.209", features = ["derive"] }
 strum = "0.26.3"
 strum_macros = "0.26.4"

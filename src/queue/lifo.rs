@@ -1,37 +1,13 @@
-use std::cmp::{min};
-use serde::{Deserialize, Serialize};
-use std::collections::{VecDeque};
-use chrono::{DateTime, Duration, Utc};
-use uuid::{Uuid};
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Message {
-    #[serde(rename="messageBody")]
-    body: String,
-    #[serde(rename="queueUrl")]
-    queue_url: String,
-    #[serde(default="default_message_id")]
-    id: String,
-    #[serde(default="default_attempt")]
-    attempt: u8
-}
-
-pub fn default_attempt() -> u8 { 1 }
-
-pub fn default_message_id() -> String { Uuid::new_v4().to_string() }
-
-#[derive(Clone, Debug)]
-pub struct InflightMessage {
-    msg: Message,
-    complete: bool,
-    created_at: DateTime<Utc>
-}
+use crate::queue::msg::*;
+use chrono::{Duration, Utc};
+use std::cmp::min;
+use std::collections::VecDeque;
 
 pub struct Lifo {
     name: String,
     in_flight_expiration_ms: i64,
     queue: VecDeque<Message>,
-    in_flight: VecDeque<InflightMessage>
+    in_flight: VecDeque<InflightMessage>,
 }
 
 impl Lifo {
@@ -42,7 +18,7 @@ impl Lifo {
             name,
             in_flight_expiration_ms: 1000,
             queue: VecDeque::new(),
-            in_flight: VecDeque::new()
+            in_flight: VecDeque::new(),
         }
     }
 
@@ -51,7 +27,7 @@ impl Lifo {
             name,
             in_flight_expiration_ms,
             queue: VecDeque::new(),
-            in_flight: VecDeque::new()
+            in_flight: VecDeque::new(),
         }
     }
 
@@ -65,7 +41,10 @@ impl Lifo {
 
     fn show_in_flight(&self, cnt: usize) -> Vec<&InflightMessage> {
         let q_size = min(cnt, self.in_flight.len());
-        self.in_flight.range(..q_size).into_iter().collect::<Vec<&InflightMessage>>()
+        self.in_flight
+            .range(..q_size)
+            .into_iter()
+            .collect::<Vec<&InflightMessage>>()
     }
 
     fn complete(&mut self, id: &String) {
@@ -109,7 +88,7 @@ impl Lifo {
             let new_msg = InflightMessage {
                 msg,
                 complete: false,
-                created_at: Utc::now()
+                created_at: Utc::now(),
             };
             self.in_flight.push_back(new_msg);
             deque_cnt -= 1;
@@ -121,28 +100,29 @@ impl Lifo {
 
 #[cfg(test)]
 mod tests {
-    use rand::prelude::*;
     use super::*;
+    use rand::prelude::*;
 
     const QUEUE_NAME: &str = "a";
-    const MSG_BODY: &str = "1";
 
-    fn create_msg() -> Message {
+    fn create_body() -> Vec<u8> {
+        vec![1, 2, 3]
+    }
+
+    fn create_msg(body: Vec<u8>) -> Message {
         Message {
-            body: MSG_BODY.to_string(),
-            queue_url: "123".to_string(),
+            body,
             id: default_message_id(),
-            attempt: 1
+            attempt: 1,
         }
     }
 
-    fn setup() -> Lifo {
-        let mut q = Lifo::create(String::from(QUEUE_NAME));
+    fn setup(queue_name: &str, body: Vec<u8>) -> Lifo {
+        let mut q = Lifo::create(queue_name.to_string());
         let msg = Message {
-            body: MSG_BODY.to_string(),
-            queue_url: "123".to_string(),
+            body,
             id: default_message_id(),
-            attempt: 1
+            attempt: 1,
         };
         q.add(msg);
         q
@@ -151,27 +131,30 @@ mod tests {
     fn populate_wit_msgs(q: &mut Lifo) {
         const MSG_CNT: usize = 1000;
         for _ in 0..MSG_CNT {
-            let msg = create_msg();
+            let msg = create_msg(create_body());
             q.add(msg);
         }
     }
 
     #[test]
     fn test_create() {
-        let q = setup();
-        assert_eq!(q.name, QUEUE_NAME);
+        let body = create_body();
+        let expected_queue_name = QUEUE_NAME;
+        let q = setup(expected_queue_name, body);
+        assert_eq!(q.name, expected_queue_name);
     }
 
     #[test]
     fn test_add() {
-        let q = setup();
+        let expected_body = create_body();
+        let q = setup(QUEUE_NAME, expected_body.clone());
         let loaded_msg = q.queue.back().unwrap();
-        assert_eq!(loaded_msg.body, MSG_BODY);
+        assert_eq!(loaded_msg.body, expected_body);
     }
 
     #[test]
     fn test_one_pop() {
-        let mut q = setup();
+        let mut q = setup(QUEUE_NAME, create_body());
         let mut msg_q = q.pop(1);
         let popped_msg = msg_q.first_mut().unwrap();
         let inflight_msgs = q.show_in_flight(1);
@@ -185,7 +168,7 @@ mod tests {
         let mut q = Lifo::create(String::from(QUEUE_NAME));
         let mut v = Vec::new();
         for _ in 0..MSG_CNT {
-            let msg = create_msg();
+            let msg = create_msg(create_body());
             v.push(msg.id.clone());
             q.add(msg);
         }
@@ -225,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_show_in_flight() {
-        let mut q = setup();
+        let mut q = setup(QUEUE_NAME, create_body());
         let msgs = q.pop(1);
         let msg = msgs.first().unwrap();
         let v = q.show_in_flight(1);
