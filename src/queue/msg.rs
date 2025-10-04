@@ -11,6 +11,16 @@ pub struct Message {
     pub attempt: u8,
 }
 
+impl Message {
+    pub fn new(body: Vec<u8>) -> Message {
+        Message {
+            body,
+            id: default_message_id(),
+            attempt: default_attempt(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct InflightMessage {
     pub msg: Message,

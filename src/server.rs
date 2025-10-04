@@ -1,13 +1,15 @@
-use crate::constants::{DEFAULT_CLIENT_SIZE, OKAY_RESPONSE, RESP_BUFFER_SIZE};
+use crate::constants::RESP_BUFFER_SIZE;
+use crate::queue::manager::QueueManager;
 use crate::resp::msg::RespMsg;
 use crate::resp::reader::RespReader;
 use crate::resp::result::RespError;
 use std::collections::VecDeque;
+use std::fmt;
 use std::fmt::Formatter;
 use std::string::FromUtf8Error;
-use std::{fmt, io};
-use tokio::io::{AsyncWriteExt, Error, Interest};
-use tokio::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use tokio::io::{AsyncWriteExt, Error};
+use tokio::net::TcpListener;
 
 #[derive(Debug)]
 pub enum SerializeError {
@@ -58,12 +60,6 @@ struct TcpClient {
     raw_msg_queue: VecDeque<RespMsg>,
 }
 
-#[derive(Debug)]
-struct BufferReadResult {
-    read_to_end_of_message: bool,
-    bytes_read: usize,
-}
-
 impl TcpClient {
     pub fn new(address: String) -> TcpClient {
         TcpClient {
@@ -99,59 +95,27 @@ impl TcpClient {
 }
 
 pub struct TcpServer {
-    redis_clients: Vec<TcpClient>,
+    q_manager: QueueManager,
 }
 
 impl TcpServer {
     pub fn new() -> TcpServer {
         TcpServer {
-            redis_clients: Vec::with_capacity(DEFAULT_CLIENT_SIZE),
+            q_manager: QueueManager::new(),
         }
     }
 
-    pub async fn start(&self) -> Result<(), Error> {
+    pub async fn start(self) -> Result<(), Error> {
+        let q = Arc::new(self.q_manager);
+        let p = q.clone();
+        p.listen_for_commands();
         let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                self.handle_stream(stream).await?;
-            }
-            Err(e) => println!("couldn't get client {:?}", e),
-        }
-
-        Ok(())
-    }
-
-    async fn handle_stream(&self, mut stream: TcpStream) -> Result<(), Error> {
-        let mut okay_sent = false;
-        let mut commands_to_process: VecDeque<Vec<Vec<u8>>> = VecDeque::new();
-        let mut prev_eol_found = false;
         loop {
-            let ready = stream.ready(Interest::READABLE).await?;
-            stream.writable().await?;
-
-            if ready.is_readable() {
-                let mut data = [0; 4000];
-                match stream.try_read(&mut data) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if !okay_sent {
-                            stream.write_all(OKAY_RESPONSE.as_bytes()).await?;
-                            okay_sent = true
-                        } else {
-                            stream.write_all("+OK\r\n".as_bytes()).await?;
-                        }
-                    }
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                }
-            }
+            let (socket, _) = listener.accept().await?;
+            let new_q = q.clone();
+            tokio::spawn(async move { new_q.handle_new_stream(socket).await });
         }
-        println!("stream ended");
         Ok(())
     }
 }

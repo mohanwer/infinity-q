@@ -13,13 +13,17 @@ pub struct Lifo {
 impl Lifo {
     const MAX_ATTEMPT: u8 = 3;
 
-    fn create(name: String) -> Lifo {
+    pub fn new(name: String) -> Lifo {
         Lifo {
             name,
             in_flight_expiration_ms: 1000,
             queue: VecDeque::new(),
             in_flight: VecDeque::new(),
         }
+    }
+
+    pub fn size(&self) -> usize {
+        self.queue.len()
     }
 
     fn create_with_expiration(name: String, in_flight_expiration_ms: i64) -> Lifo {
@@ -35,7 +39,7 @@ impl Lifo {
         msg.created_at + Duration::milliseconds(self.in_flight_expiration_ms) < Utc::now()
     }
 
-    fn add(&mut self, msg: Message) {
+    pub fn add(&mut self, msg: Message) {
         self.queue.push_back(msg);
     }
 
@@ -74,7 +78,15 @@ impl Lifo {
         }
     }
 
-    fn pop(&mut self, cnt: usize) -> Vec<Message> {
+    pub fn reset_msg(&mut self, id: &String) {
+        let idx = self.in_flight.iter().position(|x| x.msg.id == *id);
+        if let Some(i) = idx {
+            let in_flight_msg = self.in_flight.remove(i).unwrap();
+            self.add(in_flight_msg.msg);
+        }
+    }
+
+    pub fn pop(&mut self, cnt: usize) -> Vec<Message> {
         let mut deque_cnt = cnt.clone();
         self.sweep_in_flight();
         let mut v = Vec::with_capacity(deque_cnt);
@@ -118,7 +130,7 @@ mod tests {
     }
 
     fn setup(queue_name: &str, body: Vec<u8>) -> Lifo {
-        let mut q = Lifo::create(queue_name.to_string());
+        let mut q = Lifo::new(queue_name.to_string());
         let msg = Message {
             body,
             id: default_message_id(),
@@ -165,7 +177,7 @@ mod tests {
     #[test]
     fn test_many_pop() {
         const MSG_CNT: usize = 1000;
-        let mut q = Lifo::create(String::from(QUEUE_NAME));
+        let mut q = Lifo::new(String::from(QUEUE_NAME));
         let mut v = Vec::new();
         for _ in 0..MSG_CNT {
             let msg = create_msg(create_body());

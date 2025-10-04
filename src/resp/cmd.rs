@@ -25,7 +25,7 @@ pub enum CommandName {
 }
 
 #[derive(Debug)]
-struct LPop {
+pub struct LPop {
     pub key: String,
     pub count: Option<u32>,
 }
@@ -45,7 +45,7 @@ impl LPop {
 }
 
 #[derive(Debug)]
-struct LPush {
+pub struct LPush {
     pub key: String,
     pub elements: Vec<Vec<u8>>,
 }
@@ -54,10 +54,10 @@ impl LPush {
     pub fn new(mut msg: RespMsg) -> Result<Self> {
         let key = msg.arg_to_str(0)?;
         // we don't need the key/first element so we subtract 2 instead of 1.
-        let mut elements = Vec::with_capacity(msg.args.len() - 2);
-        for i in 1..msg.args.len() {
-            let element = std::mem::take(&mut msg.args[i]);
-            msg.args.remove(i);
+        let mut elements = Vec::with_capacity(msg.args.len() - 1);
+        for _ in 1..msg.args.len() {
+            let element = std::mem::take(&mut msg.args[1]);
+            msg.args.remove(1);
             elements.push(element);
         }
         Ok(LPush { key, elements })
@@ -65,27 +65,43 @@ impl LPush {
 }
 
 #[derive(Debug)]
-struct Hello {
+pub struct Hello {
     pub user: Option<String>,
     pub password: Option<String>,
-    pub protocol_version: u8,
+    pub protocol_version: Option<u8>,
 }
 
 impl Hello {
     pub fn new(msg: RespMsg) -> Result<Self> {
         let mut user: Option<String> = None;
         let mut password: Option<String> = None;
-        let mut args = msg.args_to_str_vec()?;
-        let protocol_version = args[0]
-            .parse::<u8>()
-            .map_err(|_| RespError::ProtocolOutOfRange(args[0].clone()))?;
-        for arg in args {
-            if arg == AUTH {
-                user = Some(arg);
-            } else if arg == AUTH {
-                password = Some(arg);
+        let mut protocol_version = None;
+
+        let args = msg.args_to_str_vec()?;
+        if !args.is_empty() {
+            let potential_protocol = &args[0];
+            if potential_protocol == "2" {
+                protocol_version = Some(2);
+            } else if potential_protocol == "3" {
+                protocol_version = Some(3);
             }
         }
+
+        for (i, arg) in args[1..].iter().enumerate().skip(RESP_FIRST_ARG_IDX) {
+            if arg == "SETNAME" || args[i - 1] == "SETNAME" {
+                // TODO: needs implementation
+                continue;
+            }
+            if args[i - 1] == AUTH {
+                user = Some(arg.clone());
+                continue;
+            }
+            if args[i - 2] == AUTH {
+                password = Some(arg.clone());
+                continue;
+            }
+        }
+
         Ok(Hello {
             user,
             password,
@@ -127,6 +143,7 @@ pub enum Cmd {
     // HELLO [protover [AUTH username password] [SETNAME clientname]]
     HELLO(Hello),
     ClientSetinfo(ClientSetInfo),
+    Shutdown,
     Unknown,
 }
 
@@ -160,7 +177,7 @@ mod tests {
             Cmd::HELLO(h) => {
                 assert_eq!(h.user, None);
                 assert_eq!(h.password, None);
-                assert_eq!(h.protocol_version, 3);
+                assert_eq!(h.protocol_version, Some(3));
             }
             _ => {
                 panic!("invalid cmd");

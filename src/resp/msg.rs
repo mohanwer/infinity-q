@@ -1,5 +1,6 @@
 use crate::resp::result::RespError::UTFConversionError;
 use crate::resp::result::*;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct RespMsg {
@@ -38,4 +39,71 @@ impl RespMsg {
         }
         Ok(args)
     }
+}
+
+trait RespResponseValue {
+    fn process(&self) -> String;
+}
+
+impl RespResponseValue for i32 {
+    fn process(&self) -> String {
+        format!(":{self}")
+    }
+}
+
+impl RespResponseValue for String {
+    fn process(&self) -> String {
+        format!("+{self}")
+    }
+}
+
+/*
+%7
++server
++redis
++version
++7.0.0
++proto
+:3
++id
+:123
++mode
++standalone
++role
++master
++modules
+*0
+*/
+
+pub fn default_auth_response() -> String {
+    let server_settings = HashMap::from([
+        ("server", "redis"),
+        ("version", "7.0.0"),
+        ("proto", "3"),
+        ("id", "123"),
+        ("mode", "standalone"),
+        ("role", "master"),
+        ("modules", "0"),
+    ]);
+    hash_to_response(server_settings)
+}
+
+pub fn hash_to_response(h: HashMap<&str, &str>) -> String {
+    let mut response = Vec::new();
+    let h_size = h.len();
+    response.push(format!("*{h_size}"));
+    for (k, v) in h {
+        if !k.is_ascii() || !v.is_ascii() {
+            return String::from("-ERR invalid UTF-8 in key or value");
+        }
+
+        if v.parse::<i32>().is_ok() {
+            response.push(format!("+{k}"));
+            response.push(format!(":{v}"));
+        } else {
+            response.push(format!("+{k}"));
+            response.push(format!("+{v}"));
+        }
+    }
+    response.join("\r\n")
 }
